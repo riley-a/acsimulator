@@ -1,0 +1,18 @@
+[Unit]
+Description=AC43 door controller simulator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/.venv/bin/python __DIR__/run.py
+Restart=on-failure
+RestartSec=3
+# SIGTERM -> app releases every relay before exiting
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

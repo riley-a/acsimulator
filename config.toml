@@ -1,0 +1,173 @@
+# AC43 Simulator configuration
+# -----------------------------------------------------------------------------
+# Everything the UI shows is built from this file. To add a relay, trigger or
+# sensor: add a board (if needed), then add an [[outputs]] / [[inputs]] entry
+# or reference it from a door. No code changes required.
+#
+# Channel / pin numbers are 0-based:
+#   XL9535 relay board : 0-15  (A0-A7 = 0-7, B0-B7 = 8-15)
+#   MCP23017 input     : 0-15  (GPA0-GPA7 = 0-7, GPB0-GPB7 = 8-15)
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[hardware]
+# "auto" -> use real I2C if smbus2 + /dev/i2c-N are available, otherwise mock
+# "real" -> fail at startup if a board is missing
+# "mock" -> never touch I2C (develop on a laptop)
+mode = "auto"
+
+[timing]
+rex_pulse_ms = 500          # how long a REX relay is held closed
+expected_unlock_s = 5       # without a lock sensor, show "Unlocked (expected)" this long after a REX
+input_poll_ms = 100         # how often input boards are read
+
+# --- Boards ------------------------------------------------------------------
+
+[[boards]]
+id = "relays"
+driver = "xl9535"           # XL9535-K16V5 16-channel relay board
+bus = 1                     # /dev/i2c-1 on a Raspberry Pi
+address = 0x20
+
+[[boards]]
+id = "sense"
+driver = "mcp23017"         # door lock confirmation inputs
+bus = 1
+address = 0x21              # NOTE: both boards default to 0x20 - set A0 jumper on the MCP23017 (or change here)
+enabled = false             # set true once the MCP23017 is wired
+pullups = true              # enable internal pull-ups on all pins
+
+[[boards]]
+id = "fai"
+driver = "xl9535"           # second relay board for the Fire Alarm Input (uses ch 0-3)
+bus = 1
+address = 0x22              # set its address jumpers so it differs from "relays" and "sense"
+
+# --- Doors -------------------------------------------------------------------
+# dpi / rex1 / rex2 : relay channels that drive the AC43 door inputs
+# dpi_invert        : false = relay ON means door OPEN (wire NC/COM to the DPI terminal)
+# lock_sense        : MCP23017 pin reading the AC43 lock relay (optional)
+# lock_active_low   : true = pin pulled LOW means the lock is UNLOCKED
+
+[[doors]]
+id = 1
+name = "Door 1"
+dpi  = { board = "relays", channel = 0 }
+rex1 = { board = "relays", channel = 1 }
+rex2 = { board = "relays", channel = 2 }
+lock_sense = { board = "sense", pin = 0 }
+
+[[doors]]
+id = 2
+name = "Door 2"
+dpi  = { board = "relays", channel = 3 }
+rex1 = { board = "relays", channel = 4 }
+rex2 = { board = "relays", channel = 5 }
+lock_sense = { board = "sense", pin = 1 }
+
+[[doors]]
+id = 3
+name = "Door 3"
+dpi  = { board = "relays", channel = 6 }
+rex1 = { board = "relays", channel = 7 }
+rex2 = { board = "relays", channel = 8 }
+lock_sense = { board = "sense", pin = 2 }
+
+[[doors]]
+id = 4
+name = "Door 4"
+dpi  = { board = "relays", channel = 9 }
+rex1 = { board = "relays", channel = 10 }
+rex2 = { board = "relays", channel = 11 }
+lock_sense = { board = "sense", pin = 3 }
+
+[door_defaults]
+dpi_invert = false
+lock_active_low = true
+auto_close_s = 0            # >0 closes the door (DPI) automatically after N seconds
+
+# --- Fire Alarm Input (FAI) --------------------------------------------------
+# Simulates the FACP contact on the AC43 FAI terminals (F+ F- FP L L).
+#
+#   relay        contacts  wired across      energised =
+#   mode         COM/NO    FAI+  <-> FAIP    jumper fitted -> NC mode
+#   no_trigger   COM/NO    FAI+  <-> FAI-    contact closes -> ALARM (NO mode)
+#   nc_trigger   COM/NC    FAI-  <-> FAIP    loop breaks    -> ALARM (NC mode)
+#   latch        COM/NC    L     <-> L       latch loop opens
+#
+# The app interlocks these: only the trigger for the current mode fires, mode
+# can't change while the alarm is active, and relays switch in an order that
+# never presents a false alarm.
+
+[fai]
+enabled = true
+default_mode = "no"              # "no" or "nc" at startup
+mode       = { board = "fai", channel = 0 }
+no_trigger = { board = "fai", channel = 1 }
+nc_trigger = { board = "fai", channel = 2 }
+latch      = { board = "fai", channel = 3 }
+mode_invert = false              # true if the mode relay is wired COM/NC (power-off = NC mode)
+isolate_nc_in_no_mode = true     # hold nc_trigger open in NO mode so FAIP isn't tied to FAI-
+
+# Confirmation: the AC43's own FAI output relay (NC/COM/NO beside the FAI input).
+#   COM -> MCP23017 GND, NO -> sense_no pin, NC -> sense_nc pin (pull-ups, LOW = active)
+#   Both wired = the app also detects a disconnected wire.
+sense_no = { board = "sense", pin = 4 }
+sense_nc = { board = "sense", pin = 5 }
+sense_active_low = true
+
+# --- Extra outputs (AUX, anything else) --------------------------------------
+# group : which panel section it appears in ("aux", "fai", or any new name)
+# mode  : "toggle" (latching) or "pulse" (momentary, uses pulse_ms)
+
+[[outputs]]
+id = "aux.in1"
+name = "AUX IN 1"
+group = "aux"
+board = "relays"
+channel = 12
+mode = "toggle"
+
+[[outputs]]
+id = "aux.in2"
+name = "AUX IN 2"
+group = "aux"
+board = "relays"
+channel = 13
+mode = "toggle"
+
+[[outputs]]
+id = "aux.out1"
+name = "AUX OUT 1"
+group = "aux"
+board = "relays"
+channel = 14
+mode = "toggle"
+
+[[outputs]]
+id = "aux.out2"
+name = "AUX OUT 2"
+group = "aux"
+board = "relays"
+channel = 15
+mode = "toggle"
+
+# Spare channels 4-15 on the "fai" board are free, e.g.:
+# [[outputs]]
+# id = "spare.strobe"
+# name = "Strobe"
+# group = "spare"
+# board = "fai"
+# channel = 4
+# mode = "toggle"
+
+# --- Extra inputs (optional) -------------------------------------------------
+# [[inputs]]
+# id = "spare.tamper"
+# name = "Tamper"
+# group = "spare"
+# board = "sense"
+# pin = 6
+# active_low = true
