@@ -3,10 +3,17 @@
 A self-contained Raspberry Pi web app that drives a Verkada AC43's door inputs
 through an I2C relay board, with a live visual of all 4 doors.
 
-- Visual AC43 panel: AUX, Doors 1–4, FAI (future)
+- Visual AC43 panel: AUX, Doors 1–4, FAI
 - Each door: animated open/closed door, lock icon, REX1 / REX2 / Open-Close (DPI)
 - Click the door itself to toggle DPI
-- REX = momentary relay pulse (`rex_pulse_ms`); DPI = latching
+- REX: click = pulse (`rex_pulse_ms`); **press and hold** = held until you let go
+  (mouse, touch, or Space/Enter). Released after `rex_max_hold_s` (default 30 s)
+  if the browser never lets go
+- REX **Latch** (toggle per door): click REX once to turn it on, click again to
+  release. No time limit by default (`rex_max_latch_s = 0`); **All relays off**
+  also releases it
+- DPI = latching
+- AUX IN 1/2 are driven by relays; AUX OUT 1/2 are **read** from the AC43 by the MCP23017
 - Optional MCP23017 reads the AC43 lock relays → "✓ Confirmed by lock sensor"
 - Live updates to every open browser (Server-Sent Events)
 - All relays released on startup and on shutdown
@@ -23,10 +30,23 @@ No build step; Python standard library + `smbus2`.
 | 3  | Door 2 DPI  | | 11 | Door 4 REX2 |
 | 4  | Door 2 REX1 | | 12 | AUX IN 1    |
 | 5  | Door 2 REX2 | | 13 | AUX IN 2    |
-| 6  | Door 3 DPI  | | 14 | AUX OUT 1   |
-| 7  | Door 3 REX1 | | 15 | AUX OUT 2   |
+| 6  | Door 3 DPI  | | 14 | *free*      |
+| 7  | Door 3 REX1 | | 15 | *free*      |
 
 Channels 0–7 = relays A0–A7, 8–15 = B0–B7 on the XL9535-K16V5.
+
+**MCP23017 (`sense`) pins**
+
+| Pin | Reads | | Pin | Reads |
+|---|---|-|---|---|
+| GPA0 | Door 1 lock relay | | GPA4 | AC43 FAI output NO |
+| GPA1 | Door 2 lock relay | | GPA5 | AC43 FAI output NC |
+| GPA2 | Door 3 lock relay | | GPA6 | AC43 AUX OUT 1 |
+| GPA3 | Door 4 lock relay | | GPA7 | AC43 AUX OUT 2 |
+
+For every sensed relay, wire COM → MCP23017 GND and NO → the pin. Internal
+pull-ups are on, so LOW = relay on. Check that each AC43 output is dry
+(0 V on COM) before connecting.
 
 **DPI wiring:** with `dpi_invert = false`, relay ON = door OPEN. Wire the relay
 **COM/NC** across the AC43 DPI/GND terminals so a released relay reads "closed".
@@ -107,8 +127,8 @@ Everything is in `config.toml`:
 |---|---|---|
 | GET  | `/api/state` · `/api/layout` · `/api/events` (SSE) | |
 | POST | `/api/doors/<n>/open` · `/close` | |
-| POST | `/api/doors/<n>/rex/<1\|2>` | |
-| POST | `/api/outputs/<id>` | `{"action": "on\|off\|toggle\|pulse"}` |
+| POST | `/api/doors/<n>/rex/<1\|2>` | `{"action": "pulse\|hold\|latch\|release"}` (default pulse) |
+| POST | `/api/outputs/<id>` | `{"action": "on\|off\|toggle\|pulse\|hold\|latch\|release"}` |
 | POST | `/api/fai/trigger` · `/api/fai/clear` | |
 | POST | `/api/fai/mode` | `{"mode": "no\|nc"}` |
 | POST | `/api/fai/latch` | `{"open": true}` |

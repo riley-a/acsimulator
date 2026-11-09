@@ -38,12 +38,15 @@ class Controller:
         self._out_state = {oid: False for oid in self.outputs}   # logical state
         self._in_state = {iid: None for iid in self.inputs}      # None = no reading
         self._pulse_until = {}    # output id -> monotonic deadline
+        self._held = {}           # output id -> monotonic time the hold/latch started
+        self._latched = set()     # held outputs that were latched (click on / click off)
         self._timers = {}         # output id -> threading.Timer
         self._last_rex = {}       # door id -> monotonic time of last REX
         self._subs = set()
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._last_snapshot = None
+        self._seq = 0             # bumped on every broadcast change
         self._thread = None
 
         mode = cfg["hardware"]["mode"]
@@ -129,6 +132,8 @@ class Controller:
         with self._lock:
             self._cancel_timer(oid)
             self._pulse_until.pop(oid, None)
+            self._held.pop(oid, None)
+            self._latched.discard(oid)
             self._write(oid, on)
             self._on_output_change(oid, on)
         self._wake.set()
@@ -147,10 +152,57 @@ class Controller:
             self._after(oid, ms / 1000, lambda: self._end_pulse(oid))
         self._wake.set()
 
+    def hold_output(self, oid, latch=False):
+        """Energise until release_output().
+
+        hold  (press-and-hold): released after rex_max_hold_s in case the
+              browser never lets go.
+        latch (click on, click off): stays on until released on purpose;
+              rex_max_latch_s > 0 adds a limit, 0 = none.
+        """
+        with self._lock:
+            self._output_board(oid)
+            self._cancel_timer(oid)
+            self._pulse_until.pop(oid, None)
+            self._write(oid, True)
+            self._held[oid] = time.monotonic()
+            if latch:
+                self._latched.add(oid)
+            else:
+                self._latched.discard(oid)
+            self._on_output_change(oid, True)
+            limit = self.timing["rex_max_latch_s"] if latch else self.timing["rex_max_hold_s"]
+            if limit and limit > 0:
+                self._after(oid, limit, lambda: self._end_pulse(oid))
+        self._wake.set()
+
+    def release_output(self, oid):
+        """End a hold or latch. A short tap still gets the full minimum pulse."""
+        with self._lock:
+            self._latched.discard(oid)
+            started = self._held.pop(oid, None)
+            if started is None:
+                return  # never held, or already released by the safety timer
+            o = self.outputs[oid]
+            min_s = (o.get("pulse_ms") or self.timing["rex_pulse_ms"]) / 1000
+            remaining = min_s - (time.monotonic() - started)
+            self._on_rex_release(oid)
+            if remaining > 0:
+                self._pulse_until[oid] = time.monotonic() + remaining
+                self._after(oid, remaining, lambda: self._end_pulse(oid))
+            else:
+                self._cancel_timer(oid)
+                self._end_pulse(oid)
+        self._wake.set()
+
     def _end_pulse(self, oid):
         with self._lock:
             self._timers.pop(oid, None)
             self._pulse_until.pop(oid, None)
+            if self._held.pop(oid, None) is not None:
+                log.warning("%s reached its hold/latch time limit - released", oid)
+                self._latched.discard(oid)
+                self._on_rex_release(oid)
             try:
                 self._write(oid, False)
             except HardwareError as e:
@@ -183,6 +235,12 @@ class Controller:
             self.toggle_output(oid)
         elif action == "pulse":
             self.pulse_output(oid)
+        elif action == "hold":
+            self.hold_output(oid)
+        elif action == "latch":
+            self.hold_output(oid, latch=True)
+        elif action == "release":
+            self.release_output(oid)
         else:
             raise PointError(f"unknown action {action!r}")
 
@@ -204,6 +262,16 @@ class Controller:
         if role == "dpi" and on and door["auto_close_s"] > 0:
             self._after(oid, door["auto_close_s"], lambda: self._auto_close(oid))
 
+    def _on_rex_release(self, oid):
+        """The expected-unlock window runs from when a held REX is let go."""
+        door, role = self._door_for(oid)
+        if door and role in ("rex1", "rex2"):
+            self._last_rex[door["id"]] = time.monotonic()
+            self._simulate_lock(door)
+
+    def _rex_held(self, door):
+        return any(door[r] in self._held for r in ("rex1", "rex2") if door[r])
+
     def _auto_close(self, oid):
         with self._lock:
             self._timers.pop(oid, None)
@@ -223,8 +291,9 @@ class Controller:
             return
         self.sim_input(iid, True)
         key = f"{iid}#sim"
-        # doors stay unlocked while a fire alarm is active
-        self._after(key, self.timing["expected_unlock_s"], lambda: self.sim_input(iid, self._fai_triggered))
+        # doors stay unlocked while a fire alarm is active or a REX is held
+        self._after(key, self.timing["expected_unlock_s"],
+                    lambda: self.sim_input(iid, self._fai_triggered or self._rex_held(door)))
 
     # --- FAI (fire alarm input) ----------------------------------------------
 
@@ -375,9 +444,15 @@ class Controller:
             with self._lock:
                 self._read_inputs()
                 snap = self.snapshot()
-            comparable = {k: v for k, v in snap.items() if k != "ts"}
-            if comparable != self._last_snapshot:
-                self._last_snapshot = comparable
+                comparable = {k: v for k, v in snap.items() if k not in ("ts", "seq")}
+                changed = comparable != self._last_snapshot
+                if changed:
+                    # seq lets the browser drop an older snapshot (e.g. a slow
+                    # POST response) that arrives after a newer live update
+                    self._last_snapshot = comparable
+                    self._seq += 1
+                    snap["seq"] = self._seq
+            if changed:
                 self._broadcast(snap)
             self._wake.wait(period)
             self._wake.clear()
@@ -392,7 +467,7 @@ class Controller:
         if sensed is not None:
             lock, source = ("unlocked" if sensed else "locked"), "sensor"
         else:
-            unlocked = rex_recent or self._fai_triggered
+            unlocked = rex_recent or self._fai_triggered or self._rex_held(d)
             lock, source = ("unlocked" if unlocked else "locked"), "expected"
         return {
             "id": d["id"],
@@ -411,8 +486,10 @@ class Controller:
             now = time.monotonic()
             return {
                 "ts": time.time(),
+                "seq": self._seq,
                 "boards": [dict(v) for v in self.board_info.values()],
-                "outputs": {oid: {"on": on, "pulsing": oid in self._pulse_until}
+                "outputs": {oid: {"on": on, "pulsing": oid in self._pulse_until, "held": oid in self._held and oid not in self._latched,
+                                   "latched": oid in self._latched}
                             for oid, on in self._out_state.items()},
                 "inputs": {iid: {"active": v} for iid, v in self._in_state.items()},
                 "doors": [self.door_state(d, now) for d in self.doors],

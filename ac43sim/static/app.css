@@ -188,7 +188,11 @@ button { font: inherit; }
 }
 .tblock i { width: 16px; height: 16px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #6a6e74, #1c1d20); }
 .actions { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
-.btn.rex.firing { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn.rex { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.btn.rex.firing, .btn.rex.pressed { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn.rex.latched { background: var(--amber); border-color: #b07a00; color: #2b2f36; font-weight: 650; }
+.btn.latch-mode { font-size: 12px; color: var(--muted); }
+.btn.latch-mode.active { background: var(--amber-soft); border-color: var(--amber); color: #7a5300; font-weight: 650; }
 .btn.dpi.is-open { background: var(--amber-soft); border-color: var(--amber); }
 
 /* --- FAI / power --------------------------------------------------------- */
@@ -213,6 +217,9 @@ button { font: inherit; }
 .fai-relays { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
 .point.small { padding: 8px 10px; }
 .point.small .name { font-size: 13px; }
+.point .note { font-size: 11px; font-weight: 500; color: var(--muted); margin-top: 2px; }
+.point .note.red { color: var(--red); font-weight: 650; }
+.point .note.amber { color: #9a6a00; }
 #fai-led.on.red { border-color: #9b2525; }
 
 .fire-banner {

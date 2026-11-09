@@ -4,10 +4,10 @@
     GET  /api/layout                points/doors/boards (static)
     GET  /api/state                 current snapshot
     GET  /api/events                SSE stream of snapshots
-    POST /api/outputs/<id>          {"action": "on|off|toggle|pulse"}
+    POST /api/outputs/<id>          {"action": "on|off|toggle|pulse|hold|latch|release"}
     POST /api/doors/<n>/open        DPI relay -> door open
     POST /api/doors/<n>/close       DPI relay -> door closed
-    POST /api/doors/<n>/rex/<1|2>   pulse REX
+    POST /api/doors/<n>/rex/<1|2>   {"action": "pulse|hold|latch|release"}  (default pulse)
     POST /api/sim/inputs/<id>       {"active": bool}  (mock input boards only)
     POST /api/fai/trigger | clear   fire alarm on / off
     POST /api/fai/mode              {"mode": "no|nc"}  (only while not triggered)
@@ -121,7 +121,10 @@ def make_handler(ctl):
                     oid = d and d[f"rex{m[2]}"]
                     if not oid:
                         raise PointError(f"door {m[1]} has no REX{m[2]} output")
-                    ctl.pulse_output(oid)
+                    action = body.get("action", "pulse")
+                    if action not in ("pulse", "hold", "latch", "release"):
+                        raise PointError(f"unknown REX action {action!r}")
+                    ctl.action(oid, action)
                 elif m := re.fullmatch(r"/api/sim/inputs/([\w.\-]+)", path):
                     ctl.sim_input(m[1], bool(body.get("active")))
                 elif path == "/api/fai/trigger":

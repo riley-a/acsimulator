@@ -19,7 +19,9 @@ port = 8080
 mode = "auto"
 
 [timing]
-rex_pulse_ms = 500          # how long a REX relay is held closed
+rex_pulse_ms = 500          # click = pulse this long; also the minimum when press-and-holding
+rex_max_hold_s = 30         # safety: a held REX is released after this long
+rex_max_latch_s = 0         # latched REX (click on / click off): 0 = no time limit
 expected_unlock_s = 5       # without a lock sensor, show "Unlocked (expected)" this long after a REX
 input_poll_ms = 100         # how often input boards are read
 
@@ -138,21 +140,7 @@ board = "relays"
 channel = 13
 mode = "toggle"
 
-[[outputs]]
-id = "aux.out1"
-name = "AUX OUT 1"
-group = "aux"
-board = "relays"
-channel = 14
-mode = "toggle"
-
-[[outputs]]
-id = "aux.out2"
-name = "AUX OUT 2"
-group = "aux"
-board = "relays"
-channel = 15
-mode = "toggle"
+# Relay channels 14-15 are free (AUX OUT moved to the sensing board below).
 
 # Spare channels 4-15 on the "fai" board are free, e.g.:
 # [[outputs]]
@@ -163,11 +151,30 @@ mode = "toggle"
 # channel = 4
 # mode = "toggle"
 
-# --- Extra inputs (optional) -------------------------------------------------
+# --- Inputs (read from the MCP23017) -----------------------------------------
+# AUX OUT 1/2 are the AC43's own output relays - we read them, not drive them.
+# Wire AC43 AUX OUT COM -> MCP23017 GND, NO -> pin (pull-up, LOW = relay on).
+
+[[inputs]]
+id = "aux.out1"
+name = "AUX OUT 1"
+group = "aux"
+board = "sense"
+pin = 6                     # GPA6
+active_low = true
+
+[[inputs]]
+id = "aux.out2"
+name = "AUX OUT 2"
+group = "aux"
+board = "sense"
+pin = 7                     # GPA7
+active_low = true
+
 # [[inputs]]
 # id = "spare.tamper"
 # name = "Tamper"
 # group = "spare"
 # board = "sense"
-# pin = 6
+# pin = 8                 # GPB0
 # active_low = true

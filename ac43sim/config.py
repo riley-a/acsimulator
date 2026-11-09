@@ -20,7 +20,9 @@ def normalise(raw):
     cfg = {
         "server": {"host": "0.0.0.0", "port": 8080, **raw.get("server", {})},
         "hardware": {"mode": "auto", **raw.get("hardware", {})},
-        "timing": {"rex_pulse_ms": 500, "expected_unlock_s": 5, "input_poll_ms": 100, **raw.get("timing", {})},
+        "timing": {"rex_pulse_ms": 500, "rex_max_hold_s": 30, "rex_max_latch_s": 0,
+                   "expected_unlock_s": 5, "input_poll_ms": 100,
+                   **raw.get("timing", {})},
         "boards": [],
         "outputs": [],
         "inputs": [],

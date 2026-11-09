@@ -81,10 +81,70 @@ function buildInputPoint(i, container) {
   const led = el("span", "led");
   const txt = el("div", "name", i.name);
   txt.append(el("div", "sub", `${i.board} · pin ${i.pin} (input)`));
-  p.append(led, txt);
+  const note = el("div", "note");
+  txt.append(note);
+  p.append(led, txt); // read-only: the state comes from the panel
   container.append(p);
-  pointEls.set(i.id, { led });
+  pointEls.set(i.id, { led, note, board: i.board });
 }
+
+// REX buttons:
+//   - latched (from the server)  -> any click releases it
+//   - door in Latch mode         -> click latches it on until clicked again
+//   - otherwise                  -> press-and-hold holds; a quick click still
+//                                   gets the full minimum pulse (server side)
+const releasers = new Set();
+
+function attachHold(btn, path, opts) {
+  btn.title = "Click to pulse · press and hold to hold · Latch mode: click on / click off";
+  let holding = null; // the in-flight "hold" request while pressed
+
+  const press = (e) => {
+    if (btn.disabled || holding) return;
+    e.preventDefault();
+    if (opts.isLatched()) return void post(path, { action: "release" });
+    if (opts.latchMode()) return void post(path, { action: "latch" });
+    btn.classList.add("pressed");
+    holding = post(path, { action: "hold" });
+    releasers.add(release);
+  };
+  function release() {
+    if (!holding) return;
+    const h = holding;
+    holding = null;
+    releasers.delete(release);
+    btn.classList.remove("pressed");
+    h.then(() => post(path, { action: "release" })); // never overtakes the hold
+  }
+
+  btn.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    try {
+      btn.setPointerCapture(e.pointerId); // keep getting pointerup if the finger slides off
+    } catch {}
+    press(e);
+  });
+  btn.addEventListener("pointerup", release);
+  btn.addEventListener("pointercancel", release);
+  btn.addEventListener("lostpointercapture", release);
+  btn.addEventListener("contextmenu", (e) => e.preventDefault()); // long-press on touch
+  btn.addEventListener("keydown", (e) => {
+    if ((e.key === " " || e.key === "Enter") && !e.repeat) press(e);
+  });
+  btn.addEventListener("keyup", (e) => {
+    if (e.key === " " || e.key === "Enter") release();
+  });
+  btn.addEventListener("blur", release);
+}
+
+window.addEventListener("blur", () => releasers.forEach((r) => r()));
+window.addEventListener("pagehide", () => {
+  // the page is going away mid-hold: tell the server directly
+  for (const btn of document.querySelectorAll(".btn.rex.pressed")) {
+    const door = btn.closest("[data-door]").dataset.door;
+    navigator.sendBeacon(`/api/doors/${door}/rex/${btn.dataset.rex}`, JSON.stringify({ action: "release" }));
+  }
+});
 
 function buildDoor(d) {
   const node = $("#door-tpl").content.firstElementChild.cloneNode(true);
@@ -103,10 +163,28 @@ function buildDoor(d) {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleDoor(); }
   });
 
+  // Latch mode (per door, remembered in this browser): click REX on, click again off
+  const latchBtn = $(".btn.latch-mode", node);
+  const latchKey = `ac43.latch.door${d.id}`;
+  const setLatchMode = (on) => {
+    latchBtn.classList.toggle("active", on);
+    latchBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    try { localStorage.setItem(latchKey, on ? "1" : "0"); } catch {}
+  };
+  let saved = false;
+  try { saved = localStorage.getItem(latchKey) === "1"; } catch {}
+  setLatchMode(saved);
+  latchBtn.addEventListener("click", () => setLatchMode(!latchBtn.classList.contains("active")));
+  if (!d.rex1 && !d.rex2) latchBtn.disabled = true;
+
   for (const b of node.querySelectorAll(".btn.rex")) {
     const n = b.dataset.rex;
-    if (!d[`rex${n}`]) b.disabled = true;
-    b.addEventListener("click", () => post(`/api/doors/${d.id}/rex/${n}`));
+    const oid = d[`rex${n}`];
+    if (!oid) b.disabled = true;
+    attachHold(b, `/api/doors/${d.id}/rex/${n}`, {
+      latchMode: () => latchBtn.classList.contains("active"),
+      isLatched: () => !!state?.outputs[oid]?.latched,
+    });
   }
   const dpiBtn = $(".btn.dpi", node);
   if (!d.dpi) dpiBtn.disabled = true;
@@ -180,16 +258,21 @@ function buildFai(f) {
   latch.addEventListener("click", () => post("/api/fai/latch", { open: !state?.fai?.latch_open }));
 
   const box = $("#fai-relays", node);
-  for (const [role, r] of Object.entries(f.relays)) {
+  // fixed order: the MicroPython build can't guarantee JSON key order
+  const byOrder = (obj, order) => order.filter((k) => obj[k]).map((k) => [k, obj[k]]);
+  for (const [role, r] of byOrder(f.relays, ["mode", "no_trigger", "nc_trigger", "latch"])) {
     const p = el("div", "point small");
     const led = el("span", "led");
     const txt = el("div", "name", r.name);
     txt.append(el("div", "sub", `${r.terminals} · ${r.board} ch ${r.channel}`));
+    const note = el("div", "note");
+    txt.append(note);
     p.append(led, txt);
     box.append(p);
     faiRelayEls[role] = led;
+    faiRelayEls[role + "#note"] = note;
   }
-  for (const [key, s] of Object.entries(f.sense)) {
+  for (const [key, s] of byOrder(f.sense, ["sense_no", "sense_nc"])) {
     const p = el("div", "point small");
     const led = el("span", "led");
     const txt = el("div", "name", s.name);
@@ -235,7 +318,22 @@ function renderFai(f) {
     : !f.triggered && f.confirm === "triggered" ? "AC43 still in alarm — latched? Open the latch loop or reset in Command."
     : "";
 
-  for (const [role, on] of Object.entries(f.relays)) setLed(faiRelayEls[role], on);
+  // what each relay is doing right now: [text, LED colour]
+  const isolating = f.mode === "no";
+  const notes = {
+    mode: (on) => on ? ["Jumper fitted — NC mode", ""] : ["Jumper removed — NO mode", ""],
+    no_trigger: (on) => on ? ["Contact closed — ALARM", "red"] : ["Contact open", ""],
+    nc_trigger: (on) => !on ? ["Loop closed", ""]
+      : isolating ? ["Held open to isolate FAIP (NO mode)", "amber"]
+      : ["Loop broken — ALARM", "red"],
+    latch: (on) => on ? ["Loop open", "amber"] : ["Loop closed", ""],
+  };
+  for (const [role, on] of Object.entries(f.relays)) {
+    const [text, color] = notes[role](on);
+    setLed(faiRelayEls[role], on, color);
+    faiRelayEls[role + "#note"].textContent = (on ? "Energised · " : "Off · ") + text;
+    faiRelayEls[role + "#note"].className = "note" + (color ? " " + color : "");
+  }
   for (const [key, active] of Object.entries(f.sense)) setLed(faiRelayEls[key], active === true, "green");
 }
 
@@ -245,8 +343,15 @@ function setLed(led, on, color) {
   led.className = "led" + (on ? ` on ${color || ""}` : "");
 }
 
+let lastSeq = -1;
+
 function render(snap) {
   if (!snap || !snap.doors) return;
+  // a button's HTTP response can land after a newer live update - ignore it
+  if (typeof snap.seq === "number") {
+    if (snap.seq < lastSeq) return;
+    lastSeq = snap.seq;
+  }
   state = snap;
 
   // status LEDs + mode
@@ -279,8 +384,15 @@ function render(snap) {
       }
     } else if (snap.inputs[id]) {
       const a = snap.inputs[id].active;
+      const b = snap.boards.find((x) => x.id === refs.board);
       setLed(refs.led, a === true, "green");
-      refs.led.title = a == null ? "no reading" : a ? "active" : "inactive";
+      refs.note.textContent =
+        a === true ? "On"
+        : a === false ? "Off"
+        : b && !b.enabled ? "Sensing board disabled"
+        : b && b.fault ? "Sensing board fault"
+        : "No reading";
+      refs.note.className = "note" + (b && b.enabled && b.fault ? " red" : "");
     }
   }
 
@@ -325,8 +437,10 @@ function render(snap) {
       setLed($(`.tl[data-role="${role}"] .led`, node), on);
     }
     for (const b of node.querySelectorAll(".btn.rex")) {
-      const oid = d[`rex${b.dataset.rex}`];
-      b.classList.toggle("firing", !!(oid && snap.outputs[oid]?.on));
+      const o = snap.outputs[d[`rex${b.dataset.rex}`]];
+      b.classList.toggle("firing", !!o?.on);
+      b.classList.toggle("latched", !!o?.latched);
+      b.textContent = `REX ${b.dataset.rex}` + (o?.latched ? " · latched" : o?.held ? " · held" : "");
     }
     const dpiBtn = $(".btn.dpi", node);
     dpiBtn.textContent = d.open ? "Close door" : "Open door";
@@ -341,7 +455,11 @@ function render(snap) {
 function connect() {
   const conn = $("#conn");
   const es = new EventSource("/api/events");
-  es.onopen = () => { conn.className = "conn ok"; $("#conn-text").textContent = "Live"; };
+  es.onopen = () => {
+    lastSeq = -1; // the server may have restarted and reset its counter
+    conn.className = "conn ok";
+    $("#conn-text").textContent = "Live";
+  };
   es.onmessage = (e) => render(JSON.parse(e.data));
   es.onerror = () => {
     conn.className = "conn bad";

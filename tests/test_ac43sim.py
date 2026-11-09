@@ -113,8 +113,6 @@ class ConfigTests(unittest.TestCase):
             expected[("relays", base + 2)] = f"door{n}.rex2"
         expected[("relays", 12)] = "aux.in1"
         expected[("relays", 13)] = "aux.in2"
-        expected[("relays", 14)] = "aux.out1"
-        expected[("relays", 15)] = "aux.out2"
         self.assertEqual(chans, expected)
 
     def test_shipped_config_sense_board(self):
@@ -124,7 +122,11 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(sense["enabled"])
         pins = {i["id"]: i["pin"] for i in cfg["inputs"]}
         self.assertEqual(pins, {"door1.lock": 0, "door2.lock": 1, "door3.lock": 2, "door4.lock": 3,
-                                "fai.sense_no": 4, "fai.sense_nc": 5})
+                                "fai.sense_no": 4, "fai.sense_nc": 5,
+                                "aux.out1": 6, "aux.out2": 7})
+        boards = {i["id"]: i["board"] for i in cfg["inputs"]}
+        self.assertEqual((boards["aux.out1"], boards["aux.out2"]), ("sense", "sense"),
+                         "AUX OUT is read from the sensing board, not driven")
 
     def test_shipped_config_fai_relays(self):
         cfg = config_mod.load(ROOT / "config.toml")
@@ -227,12 +229,83 @@ class ControllerTests(unittest.TestCase):
                 self.ctl.set_output(f"door{n}.{role}", False)
 
     def test_aux_toggle(self):
-        self.ctl.action("aux.out2", "toggle")
-        self.assertTrue(self.relays.get(15))
-        self.ctl.action("aux.out2", "toggle")
-        self.assertFalse(self.relays.get(15))
+        self.ctl.action("aux.in2", "toggle")
+        self.assertTrue(self.relays.get(13))
+        self.ctl.action("aux.in2", "toggle")
+        self.assertFalse(self.relays.get(13))
         self.ctl.action("aux.in1", "on")
         self.assertTrue(self.relays.get(12))
+        with self.assertRaises(PointError):  # AUX OUT is an input now
+            self.ctl.action("aux.out1", "on")
+
+    def test_rex_hold_stays_on_until_release(self):
+        self.ctl.hold_output("door1.rex1")
+        time.sleep(0.2)  # well past the 80 ms pulse
+        self.assertTrue(self.relays.get(1), "held REX stays energised")
+        self.assertTrue(self.ctl.snapshot()["outputs"]["door1.rex1"]["held"])
+        self.assertEqual(self.door(1)["lock"], "unlocked")
+        time.sleep(0.25)  # past expected_unlock_s while still held
+        self.assertEqual(self.door(1)["lock"], "unlocked", "still unlocked while held")
+        self.ctl.release_output("door1.rex1")
+        self.assertFalse(self.relays.get(1), "released immediately after a long hold")
+        self.assertEqual(self.door(1)["lock"], "unlocked", "expected window restarts on release")
+        time.sleep(0.4)
+        self.assertEqual(self.door(1)["lock"], "locked")
+
+    def test_rex_quick_tap_gets_minimum_pulse(self):
+        self.ctl.hold_output("door2.rex2")
+        self.ctl.release_output("door2.rex2")
+        self.assertTrue(self.relays.get(5), "tap still gets the minimum pulse")
+        time.sleep(0.2)
+        self.assertFalse(self.relays.get(5))
+
+    def test_rex_hold_safety_timeout(self):
+        self.ctl.timing["rex_max_hold_s"] = 0.15
+        self.ctl.hold_output("door3.rex1")
+        time.sleep(0.3)
+        self.assertFalse(self.relays.get(7), "forgotten hold is released")
+        self.assertFalse(self.ctl.snapshot()["outputs"]["door3.rex1"]["held"])
+        self.ctl.release_output("door3.rex1")  # late release is harmless
+        self.assertFalse(self.relays.get(7))
+
+    def test_rex_latch_stays_until_released(self):
+        self.ctl.timing["rex_max_hold_s"] = 0.1  # a hold would be released by now
+        self.ctl.action("door4.rex1", "latch")
+        out = self.ctl.snapshot()["outputs"]["door4.rex1"]
+        self.assertEqual((out["latched"], out["held"]), (True, False))
+        time.sleep(0.3)
+        self.assertTrue(self.relays.get(10), "latch ignores the hold time limit")
+        self.assertEqual(self.door(4)["lock"], "unlocked", "unlocked while latched")
+        self.ctl.action("door4.rex1", "release")
+        self.assertFalse(self.relays.get(10), "second click releases")
+        self.assertFalse(self.ctl.snapshot()["outputs"]["door4.rex1"]["latched"])
+
+    def test_rex_latch_cleared_by_all_off_and_optional_limit(self):
+        self.ctl.action("door1.rex2", "latch")
+        self.ctl.all_off()
+        self.assertFalse(self.relays.get(2))
+        self.assertFalse(self.ctl.snapshot()["outputs"]["door1.rex2"]["latched"])
+        self.ctl.timing["rex_max_latch_s"] = 0.15
+        self.ctl.action("door1.rex2", "latch")
+        time.sleep(0.3)
+        self.assertFalse(self.relays.get(2), "rex_max_latch_s > 0 releases a latch")
+        self.assertFalse(self.ctl.snapshot()["outputs"]["door1.rex2"]["latched"])
+
+    def test_aux_out_read_from_sense_board(self):
+        cfg = config_mod.load(ROOT / "config.toml")
+        cfg["hardware"]["mode"] = "mock"
+        for b in cfg["boards"]:
+            b["enabled"] = True
+        ctl = Controller(cfg)
+        try:
+            ctl._read_inputs()
+            self.assertFalse(ctl.snapshot()["inputs"]["aux.out1"]["active"])
+            ctl.boards["sense"].set_pin(6, 0)  # AC43 AUX OUT 1 relay closes NO->GND
+            ctl._read_inputs()
+            self.assertTrue(ctl.snapshot()["inputs"]["aux.out1"]["active"])
+            self.assertFalse(ctl.snapshot()["inputs"]["aux.out2"]["active"])
+        finally:
+            ctl.shutdown()
 
     def test_unknown_point(self):
         with self.assertRaises(PointError):
@@ -249,12 +322,17 @@ class ControllerTests(unittest.TestCase):
     def test_subscribers_get_updates(self):
         self.ctl.start()
         q = self.ctl.subscribe()
-        q.get(timeout=1)  # initial snapshot
+        first = q.get(timeout=1)  # initial snapshot
+        time.sleep(0.3)
+        idle_seq = self.ctl.snapshot()["seq"]
+        time.sleep(0.3)
+        self.assertEqual(self.ctl.snapshot()["seq"], idle_seq, "seq doesn't move when nothing changes")
         self.ctl.set_output("door3.dpi", True)
         deadline = time.time() + 2
         while time.time() < deadline:
             snap = q.get(timeout=2)
             if next(d for d in snap["doors"] if d["id"] == 3)["open"]:
+                self.assertGreater(snap["seq"], first["seq"], "each change gets a newer seq")
                 return
         self.fail("no update broadcast for door3 open")
 
