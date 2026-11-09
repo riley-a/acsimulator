@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AC43 Simulator</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">AC43 Simulator</div>
+  <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">Connecting…</span></div>
+  <button class="btn ghost" id="all-off" title="Release every relay">All relays off</button>
+</header>
+
+<div class="fire-banner" id="fire-banner" hidden>🔥 Fire alarm active — FAI triggered</div>
+
+<main class="device" id="device">
+  <section class="row head">
+    <div class="col-left">
+      <h1 class="model">AC43</h1>
+      <div class="status-leds" id="status-leds"></div>
+      <div class="mode" id="mode"></div>
+    </div>
+    <div class="col-main">
+      <div class="section-title">AUX</div>
+      <div class="aux" id="aux"></div>
+    </div>
+  </section>
+
+  <div id="doors"></div>
+
+  <div id="groups"></div>
+
+  <section class="row fai" id="fai">
+    <div class="col-left">
+      <div class="trigger"><span class="led trig" id="fai-led"></span><span>Triggered</span></div>
+      <div class="power"><span>Power</span><span class="led on green"></span></div>
+    </div>
+    <div class="col-main">
+      <div class="section-title">FAI</div>
+      <div class="fai-body" id="fai-body"></div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<template id="door-tpl">
+  <section class="row door">
+    <div class="col-left">
+      <div class="door-num"></div>
+      <div class="trigger"><span class="led trig"></span><span>Trigger Lock</span></div>
+    </div>
+    <div class="col-main door-main">
+      <div class="door-visual" role="button" tabindex="0" title="Click to open / close (DPI)">
+        <div class="frame">
+          <div class="opening"></div>
+          <div class="leaf"><span class="handle"></span><span class="window"></span></div>
+        </div>
+        <div class="lock-badge">
+          <svg viewBox="0 0 24 24" class="padlock" aria-hidden="true">
+            <path class="shackle" d="M7 11V8a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+            <rect x="4.5" y="11" width="15" height="10" rx="2.2" fill="currentColor"/>
+            <circle cx="12" cy="15.6" r="1.6" fill="#fff"/>
+          </svg>
+        </div>
+      </div>
+
+      <div class="door-info">
+        <div class="door-name"></div>
+        <div class="chips">
+          <span class="chip door-chip"></span>
+          <span class="chip lock-chip"></span>
+        </div>
+        <div class="lock-source"></div>
+      </div>
+
+      <div class="terminals">
+        <div class="term-labels">
+          <div class="tl" data-role="rex1"><span class="led"></span>REX1</div>
+          <div class="tl sep"></div>
+          <div class="tl" data-role="rex2"><span class="led"></span>REX2</div>
+          <div class="tl sep"></div>
+          <div class="tl" data-role="dpi"><span class="led"></span>DPI</div>
+        </div>
+        <div class="tblock"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="actions">
+          <button class="btn latch-mode" aria-pressed="false"
+                  title="Latch: click REX once to turn it on, click again to release">Latch</button>
+          <button class="btn rex" data-rex="1" aria-label="REX 1 (hold to keep active)">REX 1</button>
+          <button class="btn rex" data-rex="2" aria-label="REX 2 (hold to keep active)">REX 2</button>
+          <button class="btn dpi">Open door</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>
+
+<template id="fai-tpl">
+  <div class="fai-panel">
+    <div class="fai-warn" id="fai-warn" hidden></div>
+    <div class="fai-controls">
+      <div class="field">
+        <span class="label">Input mode</span>
+        <div class="seg" role="group" aria-label="FAI input mode">
+          <button class="btn" data-mode="no">NO</button>
+          <button class="btn" data-mode="nc">NC</button>
+        </div>
+      </div>
+      <button class="btn fire" id="fai-fire">Trigger fire alarm</button>
+      <button class="btn" id="fai-latch">Latch loop: Closed</button>
+    </div>
+    <div class="fai-status">
+      <div><span class="label">Simulator</span><span class="chip" id="fai-sim"></span></div>
+      <div><span class="label">AC43 FAI output</span><span class="chip" id="fai-confirm"></span></div>
+      <div class="fai-hint" id="fai-hint"></div>
+    </div>
+    <div class="fai-relays" id="fai-relays"></div>
+  </div>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>
